@@ -1,14 +1,19 @@
 package com.leaderboard.authservice.security;
 
 import com.leaderboard.authservice.utilities.JwtUtil;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.security.SignatureException;
+import jakarta.annotation.Nonnull;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -17,45 +22,66 @@ import java.io.IOException;
 
 @RequiredArgsConstructor
 @Component
+@Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final CustomUserDetailService userDetailService;
     private final JwtUtil jwtUtil;
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws ServletException, IOException {
+    protected void doFilterInternal(
+          @Nonnull HttpServletRequest request,
+          @Nonnull  HttpServletResponse response,
+          @Nonnull  FilterChain filterChain
+    ) throws ServletException, IOException {
 
         final String authHeader = request.getHeader("Authorization");
-        final String jwt;
-        final String username;
 
-//        1)if auth header is null then skip this filter
-        if(authHeader == null || !authHeader.startsWith("Bearer ")){
-            filterChain.doFilter(request,response);
+        // 1) Skip filter if no Bearer token
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);
             return;
         }
 
-//        2) extract jwt from the header and username from that jwt
-        jwt = authHeader.substring(7);
-        username = jwtUtil.extractUsername(jwt);
+        try {
+            // 2) Extract JWT and username
+            final String jwt = authHeader.substring(7);
+            final String username = jwtUtil.extractUsername(jwt);
 
-//        3) check if username is not null and not already authenticated
-        if(username !=null && SecurityContextHolder.getContext().getAuthentication() == null){
+            // 3) Validate token and authenticate
+            if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+                UserDetails userDetails = userDetailService.loadUserByUsername(username);
 
-            UserDetails userDetails = userDetailService.loadUserByUsername(username);
+                if (jwtUtil.isTokenValid(jwt, userDetails)) {
+                    UsernamePasswordAuthenticationToken authToken =
+                            new UsernamePasswordAuthenticationToken(
+                                    userDetails,
+                                    null,
+                                    userDetails.getAuthorities()
+                            );
 
-            if(jwtUtil.isTokenValid(jwt,userDetails)){
-                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
-                        userDetails , null , userDetails.getAuthorities()
-                );
-
-                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(authToken);
+                    authToken.setDetails(
+                            new WebAuthenticationDetailsSource().buildDetails(request)
+                    );
+                    SecurityContextHolder.getContext().setAuthentication(authToken);
+                }
             }
 
+        } catch (ExpiredJwtException ex) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "JWT expired");
+            return;
+        } catch (SignatureException ex) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid JWT signature");
+            return;
+        } catch (UsernameNotFoundException ex) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "User not found");
+            return;
+        } catch (Exception ex) {
+            log.error("JWT authentication error", ex); // Log unexpected errors
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid JWT");
+            return;
         }
-        filterChain.doFilter(request,response);
 
+        filterChain.doFilter(request, response);
     }
 }

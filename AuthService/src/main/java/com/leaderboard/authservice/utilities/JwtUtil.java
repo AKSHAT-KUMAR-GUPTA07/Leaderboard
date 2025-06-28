@@ -2,19 +2,17 @@ package com.leaderboard.authservice.utilities;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
-import java.security.Key;
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.function.Function;
 
 @Component
-@Slf4j
 public class JwtUtil {
 
     @Value("${jwt.secret}")
@@ -23,16 +21,20 @@ public class JwtUtil {
     @Value("${jwt.expiration}")
     private long jwtExpiration;
 
+    private SecretKey getSignInKey() {
+        return Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+    }
+
     public long getExpirationTime() {
         return jwtExpiration;
     }
 
     public String generateToken(String username){
         return Jwts.builder()
-                .setSubject(username)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date( System.currentTimeMillis() + jwtExpiration ))
-                .signWith(getSignInKey() , SignatureAlgorithm.HS512)
+                .subject(username)
+                .issuedAt(new Date())
+                .expiration(new Date( System.currentTimeMillis() + jwtExpiration ))
+                .signWith(getSignInKey())
                 .compact();
     }
 
@@ -58,16 +60,15 @@ public class JwtUtil {
         return claimsResolver.apply(claims);
     }
 
-    private Key getSignInKey() {
-        return Keys.hmacShaKeyFor(jwtSecret.getBytes());
-    }
-
     private Claims extractAllClaims(String token) {
-        return Jwts
-                .parserBuilder()
-                .setSigningKey(getSignInKey())
-                .build()
-                .parseClaimsJws(token)
-                .getBody();
+        try {
+            return Jwts.parser()
+                    .verifyWith(getSignInKey())
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+        }catch (Exception ex) {
+            throw new RuntimeException("Invalid JWT: " + ex.getMessage()); // Or a custom exception
+        }
     }
 }
